@@ -1,70 +1,54 @@
-export const config = {
-  runtime: "edge",
-};
+const http = require('http');
 
-const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
+const TARGET_BASE = (process.env.TARGET_DOMAIN || '').replace(/\/$/, '');
 
-const STRIP_HEADERS = new Set([
-  "host",
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "forwarded",
-  "x-forwarded-host",
-  "x-forwarded-proto",
-  "x-forwarded-port",
-  "x-vercel-id",
-  "x-vercel-ip",
-]);
+if (!TARGET_BASE) {
+  console.error("❌ TARGET_DOMAIN is not set!");
+  process.exit(1);
+}
 
-export default async function handler(req) {
-  if (!TARGET_BASE) {
-    return new Response("Misconfigured: TARGET_DOMAIN is not set", { status: 500 });
-  }
+const PORT = process.env.PORT || 3000;
 
+const server = http.createServer(async (req, res) => {
   try {
-    const url = new URL(req.url);
-    // ساخت URL هدف - این روش مطمئن‌تر است
-    const targetPath = url.pathname === "/" ? "" : url.pathname;
-    const targetUrl = TARGET_BASE + targetPath + url.search;
+    const targetUrl = TARGET_BASE + req.url;
 
-    const headers = new Headers();
+    const headers = { ...req.headers };
+    delete headers.host;
+    delete headers.connection;
+    delete headers['keep-alive'];
+    delete headers['transfer-encoding'];
 
-    for (const [key, value] of req.headers) {
-      const lowerKey = key.toLowerCase();
-      if (STRIP_HEADERS.has(lowerKey)) continue;
-      if (lowerKey.startsWith("x-vercel-")) continue;
-
-      headers.set(key, value);
-    }
-
-    const fetchOptions = {
+    const options = {
       method: req.method,
       headers: headers,
-      redirect: "manual",
+      redirect: 'manual',
     };
 
-    // مدیریت body برای XHTTP (مهم)
-    if (req.body && !["GET", "HEAD"].includes(req.method)) {
-      fetchOptions.body = req.body;
-      fetchOptions.duplex = "half";
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      options.body = req;
     }
 
-    const response = await fetch(targetUrl, fetchOptions);
+    const response = await fetch(targetUrl, options);
 
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
+    res.writeHead(response.status, Object.fromEntries(response.headers));
+
+    if (response.body) {
+      response.body.pipe(res);
+    } else {
+      res.end();
+    }
 
   } catch (err) {
-    console.error("Relay Error:", err);
-    return new Response("Bad Gateway: Tunnel Failed", { status: 502 });
+    console.error("Relay Error:", err.message);
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+    }
+    res.end("Bad Gateway");
   }
-}
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 XHTTP Relay listening on port ${PORT}`);
+  console.log(`Target: ${TARGET_BASE}`);
+});
